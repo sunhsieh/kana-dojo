@@ -90,6 +90,13 @@
   .prompt-hint{font-size:13.5px; color:var(--ink-soft);}
   .prompt-hint b{color:var(--indigo);}
 
+  /* 拼音提示（可選） */
+  .prompt-romaji{display:none; font-size:17px; font-weight:800; letter-spacing:.08em;
+    color:var(--indigo); line-height:1.2; user-select:none;}
+  .prompt-romaji.on{display:block; animation:romIn .18s ease-out;}
+  .prompt-romaji .alt{font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--ink-soft); opacity:.85; margin-left:6px;}
+  @keyframes romIn{from{opacity:0; transform:translateY(-3px);} to{opacity:1; transform:none;}}
+
   .pad{width:100%; margin-top:14px; display:grid; grid-template-columns:repeat(6,1fr); gap:8px;}
   .pad button{aspect-ratio:1/1; border:1.5px solid var(--line); background:#fffefb; border-radius:12px;
     font-family:"Noto Serif JP",serif; font-size:23px; font-weight:700; color:var(--ink); cursor:pointer; transition:.13s; padding:0;}
@@ -152,7 +159,8 @@
     transition:.18s; white-space:nowrap; margin-left:auto;}
   .slowbtn.on{background:var(--indigo); border-color:var(--indigo); color:#fff; box-shadow:0 3px 10px rgba(44,62,107,.20);}
 
-  .voicerow{display:flex; align-items:center; gap:6px; padding:0 4px;}
+  .voicerow{display:flex; align-items:center; gap:6px; padding:0 4px; flex-wrap:wrap; row-gap:6px;}
+  #romajiBtn{margin-left:0;}
   .ghostbtn{border:1px solid var(--line); background:transparent; color:#b6ac99; font-family:inherit;
     font-size:11.5px; font-weight:600; padding:4px 10px; border-radius:999px; cursor:pointer; margin-left:6px;
     transition:.18s; vertical-align:middle;}
@@ -211,6 +219,7 @@
       <button class="vbtn" data-voice="n">Nanami</button>
       <button class="vbtn" data-voice="sys">系統</button>
       <button class="slowbtn" id="slowBtn" title="慢速讀音">慢讀</button>
+      <button class="slowbtn" id="romajiBtn" title="喺喇叭下面顯示拼音">拼音</button>
     </div>
 
     <div class="card">
@@ -230,6 +239,7 @@
       <div class="panel" id="listenPanel">
         <div class="prompt-wrap">
           <button class="listen-prompt" id="listenPrompt" title="撳再聽一次"><span class="ico"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></span></button>
+          <div class="prompt-romaji" id="listenRomaji"></div>
           <div class="prompt-hint">聽發音 → 揀返正確嘅<b>假名</b></div>
         </div>
         <div class="pad" id="pad"></div>
@@ -240,6 +250,7 @@
       <div class="panel" id="writePanel">
         <div class="prompt-wrap">
           <button class="listen-prompt" id="writePrompt" title="撳再聽一次"><span class="ico"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></span></button>
+          <div class="prompt-romaji" id="writeRomaji"></div>
           <div class="prompt-hint">聽發音 → <b>手寫</b>落格 <button class="ghostbtn" id="recogBtn">認字</button></div>
         </div>
         <div class="paper-wrap"><canvas id="paper"></canvas></div>
@@ -312,6 +323,7 @@
   const readPanel=$('readPanel'), listenPanel=$('listenPanel');
   const kanaEl=$('kana'), typeEl=$('typeLabel'), inputEl=$('answer'), checkBtn=$('checkBtn'), fbRead=$('fbRead');
   const padEl=$('pad'), listenPrompt=$('listenPrompt'), fbListen=$('fbListen');
+  const listenRomaji=$('listenRomaji'), writeRomaji=$('writeRomaji');
   const writePanel=$('writePanel'), writePrompt=$('writePrompt'), fbWrite=$('fbWrite');
   const paper=$('paper'), revealEl=$('reveal'), scorebar=$('scorebar'), revealBtn=$('revealBtn');
   const candsEl=$('cands');
@@ -343,12 +355,24 @@
     lastK=c.k; return c;
   }
 
+  function renderRomaji(){
+    const html = current
+      ? current.r[0] + (current.r.length > 1
+          ? '<span class="alt">'+current.r.slice(1).join(' / ')+'</span>' : '')
+      : '';
+    [listenRomaji, writeRomaji].forEach(el=>{
+      el.innerHTML = html;
+      el.classList.toggle('on', romajiHint);
+    });
+  }
+
   // ── 語音：優先用內建高質錄音，載入唔到先用瀏覽器 TTS ──────
   const player = new Audio();
   player.preload = 'auto';
   const SILENT = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
   let audioOk = true, unlocked = false;
   let slowMode = localStorage.getItem('kanaSlow') === '1';
+  let romajiHint = localStorage.getItem('kanaRomaji') === '1';
   let voiceMode = localStorage.getItem('kanaVoice') || 'g';   // 'g' | 'n' | 'sys'
   const VOICE_DIR = { g:'audio/g/', n:'audio/n/' };
 
@@ -433,7 +457,7 @@
     fbWrite.className='feedback'; fbWrite.innerHTML='';
   }
   function newQuestion(){
-    answered=false; current=pickNext(); clearFeedback();
+    answered=false; current=pickNext(); clearFeedback(); renderRomaji();
 
     if(mode==='read'){
       readPanel.classList.add('active'); listenPanel.classList.remove('active');
@@ -801,6 +825,18 @@
     if(current) speak(current.k);
   });
 
+  const romajiBtn = $('romajiBtn');
+  function applyRomaji(){
+    romajiBtn.classList.toggle('on', romajiHint);
+    romajiBtn.textContent = romajiHint ? '拼音 ✓' : '拼音';
+    renderRomaji();
+  }
+  romajiBtn.addEventListener('click', ()=>{
+    romajiHint = !romajiHint;
+    localStorage.setItem('kanaRomaji', romajiHint?'1':'0');
+    applyRomaji();
+  });
+
   const recogBtn = $('recogBtn');
   function applyRecog(){
     recogBtn.classList.toggle('on', autoRecog);
@@ -832,7 +868,7 @@
   [...scopeSeg.children].forEach(b=>b.classList.toggle('active', b.dataset.scope===scope));
   if('speechSynthesis' in window){ speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged=()=>{}; }
   buildPool(); buildPad(); updateStats(); newQuestion();
-  applySlow(); applyVoice(); applyRecog();
+  applySlow(); applyVoice(); applyRecog(); applyRomaji();
 })();
 </script>
 </body>
