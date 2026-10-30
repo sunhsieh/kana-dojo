@@ -265,7 +265,7 @@
       <div class="stat"><span class="n" id="statAcc">—</span><span class="l">正確率</span></div>
     </div>
 
-    <footer>語音可換 Google／Nanami／系統 · 慢讀可調速 · Enter 檢查／下一題</footer>
+    <footer>語音 Google／Nanami · 手寫認字：本地筆順比對（模板 KanjiVG, CC BY-SA）</footer>
   </div>
 
 <script>
@@ -558,9 +558,13 @@
     updateStats();
     setTimeout(()=>{ if(answered) newQuestion(); }, 950);
   }
-  // ── 手寫認字（Google Handwriting API）────────────────────
-  const GUIDE = 300;          // 送去辨識嘅標準方格
-  const OUT_SCALE = 0.82;     // 字佔格嘅比例
+  // ── 手寫認字：本地筆順比對（KanjiVG 模板 + DTW）──────────
+  let TPL = null, TPL_N = 16;
+  const tplReady = fetch('kana-templates.json')
+    .then(r=>r.json())
+    .then(j=>{ TPL = j.tpl; TPL_N = j.n || 16; })
+    .catch(()=>{ TPL = null; });
+
   function clearCands(msg){
     candsEl.innerHTML = msg ? '<span class="hint">'+msg+'</span>' : '';
   }
@@ -568,87 +572,102 @@
     clearTimeout(recogTimer);
     if(answered || mode!=='write') return;
     if(!autoRecog){ clearCands('自動認字已關 · 撳「睇答案」自己對'); return; }
-    recogTimer = setTimeout(recognize, 1250);   // 留足夠停頓，等寫完多筆畫
+    recogTimer = setTimeout(recognize, 900);
   }
-  // 沿筆畫等距重取樣，令點距一致（隔走手指抖動同過密嘅點）
-  function resample(pts, step){
-    if(pts.length < 2) return pts.map(p=>p.slice());
-    const out = [pts[0].slice()];
-    for(let i=1;i<pts.length;i++){
-      const b = pts[i];
-      let ax = out[out.length-1][0], ay = out[out.length-1][1], at = out[out.length-1][2];
-      let dx = b[0]-ax, dy = b[1]-ay, d = Math.hypot(dx,dy);
-      while(d >= step){
-        const k = step/d;
-        ax += dx*k; ay += dy*k; at += (b[2]-at)*k;
-        out.push([ax, ay, at]);
-        dx = b[0]-ax; dy = b[1]-ay; d = Math.hypot(dx,dy);
-      }
+  // 等弧長重取樣成固定點數
+  function resampleN(pts, n){
+    if(pts.length < 2) return Array.from({length:n}, ()=>[pts[0][0], pts[0][1]]);
+    const d = [0];
+    for(let i=1;i<pts.length;i++) d.push(d[i-1] + Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+    const total = d[d.length-1];
+    if(!total) return Array.from({length:n}, ()=>[pts[0][0], pts[0][1]]);
+    const out = [];
+    let j = 0;
+    for(let k=0;k<n;k++){
+      const tgt = total * k / (n-1);
+      while(j < d.length-2 && d[j+1] < tgt) j++;
+      const seg = d[j+1]-d[j];
+      const t = seg ? (tgt-d[j])/seg : 0;
+      out.push([pts[j][0] + (pts[j+1][0]-pts[j][0])*t,
+                pts[j][1] + (pts[j+1][1]-pts[j][1])*t]);
     }
-    const last = pts[pts.length-1];
-    const tail = out[out.length-1];
-    if(Math.hypot(tail[0]-last[0], tail[1]-last[1]) > 0.5) out.push(last.slice());
     return out;
   }
-  // 三點加權平滑，減低手震
-  function smooth(pts){
-    if(pts.length < 3) return pts;
-    const q = pts.map(p=>p.slice());
-    for(let i=1;i<pts.length-1;i++){
-      q[i][0] = (pts[i-1][0] + 2*pts[i][0] + pts[i+1][0]) / 4;
-      q[i][1] = (pts[i-1][1] + 2*pts[i][1] + pts[i+1][1]) / 4;
+  // 動態時間規整（banded）
+  function dtw(a, b, band){
+    const n = a.length, m = b.length;
+    const INF = 1e9;
+    const D = new Float64Array((n+1)*(m+1)).fill(INF);
+    const W = m+1;
+    D[0] = 0;
+    for(let i=1;i<=n;i++){
+      const lo = Math.max(1, i-(band+Math.abs(n-m)));
+      const hi = Math.min(m, i+(band+Math.abs(n-m)));
+      for(let j=lo;j<=hi;j++){
+        const cost = Math.hypot(a[i-1][0]-b[j-1][0], a[i-1][1]-b[j-1][1]);
+        const p = D[(i-1)*W+j], q = D[i*W+j-1], r = D[(i-1)*W+j-1];
+        D[i*W+j] = cost + Math.min(p, q, r);
+      }
     }
-    return q;
+    return D[n*W+m] / Math.max(n, m);
   }
-  function inkPayload(){
+  function strokeDist(a, b){
+    const a2 = resampleN(a, TPL_N), b2 = resampleN(b, TPL_N);
+    const rev = b2.slice().reverse();
+    return Math.min(dtw(a2, b2, 3), dtw(a2, rev, 3));
+  }
+  function scoreKana(user, tpl){
+    const nu = user.length, nt = tpl.length;
+    const pen = Math.abs(nu-nt) * 0.45;
+    if(nu === nt){
+      let d = 0;
+      for(let i=0;i<nu;i++) d += strokeDist(user[i], tpl[i]);
+      return d/nu + pen;
+    }
+    let d = 0, cnt = 0, i = 0, j = 0;
+    while(i<nu && j<nt){
+      if(nu-i > nt-j) i++;
+      else if(nu-i < nt-j) j++;
+      else { d += strokeDist(user[i], tpl[j]); cnt++; i++; j++; }
+    }
+    return (cnt ? d/cnt : 3) + pen;
+  }
+  // 正規化成單位方格（保持長寬比、置中）
+  function normalizeInk(){
     const flat = strokes.flat();
-    if(!flat.length) return [];
     let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
     flat.forEach(p=>{
       if(p[0]<minX) minX=p[0]; if(p[0]>maxX) maxX=p[0];
       if(p[1]<minY) minY=p[1]; if(p[1]>maxY) maxY=p[1];
     });
-    const bw = maxX-minX, bh = maxY-minY;
-    const side = Math.max(bw, bh, 1);
-    const scale = (GUIDE * OUT_SCALE) / side;
+    const side = Math.max(maxX-minX, maxY-minY, 1);
     const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
-    const ox = GUIDE/2 - cx*scale, oy = GUIDE/2 - cy*scale;
-    return strokes.map(s=>{
-      const moved = s.map(([x,y,t])=>[x*scale+ox, y*scale+oy, t||0]);
-      const rs = resample(moved, 2.2);
-      const sm = smooth(rs);
-      return sm.map(p=>[Math.round(p[0]), Math.round(p[1]), Math.round(p[2])]);
-    }).filter(s=>s.length);
+    return strokes.map(s=>s.map(([x,y])=>[(x-cx)/side, (y-cy)/side]));
+  }
+  function localRank(){
+    if(!TPL) return [];
+    const un = normalizeInk();
+    const scored = [];
+    pool.forEach(o=>{
+      const t = TPL[o.k];
+      if(t) scored.push([scoreKana(un, t), o.k]);
+    });
+    scored.sort((a,b)=>a[0]-b[0]);
+    if(!scored.length) return [];
+    const best = scored[0][0];
+    if(best > 0.62) return [];                       // 差太遠 → 當認唔到
+    return scored.filter(x=>x[0] <= best*1.85 + 0.03).slice(0,6).map(x=>x[1]);
   }
   async function recognize(){
     if(mode!=='write' || answered || !strokes.length) return;
     const seq = ++recogSeq;
+    if(!TPL){ clearCands('認字載入中…'); return; }
     clearCands('認字中…');
-    let list = null;
-    try{
-      const res = await fetch('https://inputtools.google.com/request?itc=ja-t-i0-handwrit&app=demopage', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ options:'enable_pre_space', requests:[{
-          writing_guide:{ writing_area_width:GUIDE, writing_area_height:GUIDE },
-          ink: inkPayload(), language:'ja'
-        }]})
-      });
-      const js = await res.json();
-      if(js && js[0]==='SUCCESS' && js[1] && js[1][0]){
-        const raw = (js[1][0][1] || []).map(x=>String(x).trim()).filter(Boolean);
-        const kana = [...new Set(raw.filter(x=>/^[\u3041-\u3096\u30a1-\u30fa\u30fc]$/.test(x)))];
-        // 假名優先；一個都冇就照顯示單字候選，好過靜靜雞話「認唔到」
-        list = kana.length ? kana : [...new Set(raw.filter(x=>x.length===1))].slice(0,4);
-      }
-    }catch(e){ list = null; }
+    await new Promise(r=>requestAnimationFrame(r));
+    const list = localRank();
     if(seq !== recogSeq || answered) return;
-    cands = list || [];
-    if(!cands.length){
-      clearCands(list===null ? '認字暫時唔得（要連網）· 可撳「睇答案」自己對'
-                             : '認唔到，再寫一次？');
-      return;
-    }
+    cands = list;
+    if(!cands.length){ clearCands('認唔到，再寫大啲／清楚啲？'); return; }
     renderCands();
   }
   function renderCands(){
