@@ -136,9 +136,15 @@
   .speak.slow{font-size:12px; font-weight:700; font-family:inherit; letter-spacing:.02em;}
 
   .slowbtn{border:1px solid var(--line); background:var(--card); color:var(--ink-soft); font-family:inherit;
-    font-size:12.5px; font-weight:600; padding:0 13px; min-height:44px; border-radius:12px; cursor:pointer;
-    transition:.18s; white-space:nowrap;}
-  .slowbtn.on{background:var(--indigo); border-color:var(--indigo); color:#fff; box-shadow:0 4px 14px rgba(44,62,107,.22);}
+    font-size:12px; font-weight:600; padding:5px 11px; border-radius:999px; cursor:pointer;
+    transition:.18s; white-space:nowrap; margin-left:auto;}
+  .slowbtn.on{background:var(--indigo); border-color:var(--indigo); color:#fff; box-shadow:0 3px 10px rgba(44,62,107,.20);}
+
+  .voicerow{display:flex; align-items:center; gap:6px; padding:0 4px;}
+  .voicerow .vl{font-size:11px; color:#b6ac99; letter-spacing:.14em; margin-right:2px;}
+  .vbtn{border:1px solid var(--line); background:transparent; color:var(--ink-soft); font-family:inherit;
+    font-size:12px; font-weight:500; padding:5px 11px; border-radius:999px; cursor:pointer; transition:.18s;}
+  .vbtn.active{background:var(--indigo); border-color:var(--indigo); color:#fff; font-weight:700;}
 
   .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; background:var(--card);
     border-radius:18px; padding:14px 8px; box-shadow:0 4px 18px rgba(60,48,28,.06); border:1px solid #f2ebdd;}
@@ -181,6 +187,13 @@
         <button data-scope="kata">片假名</button>
         <button data-scope="both">全部</button>
       </div>
+    </div>
+
+    <div class="voicerow">
+      <span class="vl">語音</span>
+      <button class="vbtn" data-voice="g">Google</button>
+      <button class="vbtn" data-voice="n">Nanami</button>
+      <button class="vbtn" data-voice="sys">系統</button>
       <button class="slowbtn" id="slowBtn" title="慢速讀音">慢讀</button>
     </div>
 
@@ -235,7 +248,7 @@
       <div class="stat"><span class="n" id="statAcc">—</span><span class="l">正確率</span></div>
     </div>
 
-    <footer>睇字：打羅馬字 · 聽聲：揀假名 · 手寫：畫完自己對答案 · Enter 檢查／下一題</footer>
+    <footer>語音可換 Google／Nanami／系統 · 慢讀可調速 · Enter 檢查／下一題</footer>
   </div>
 
 <script>
@@ -315,6 +328,8 @@
   const SILENT = 'data:audio/wav;base64,UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
   let audioOk = true, unlocked = false;
   let slowMode = localStorage.getItem('kanaSlow') === '1';
+  let voiceMode = localStorage.getItem('kanaVoice') || 'g';   // 'g' | 'n' | 'sys'
+  const VOICE_DIR = { g:'audio/g/', n:'audio/n/' };
 
   function ttsFallback(kana){
     if(!('speechSynthesis' in window)) return;
@@ -330,9 +345,15 @@
   function speak(kana, forceSlow){
     const slow = forceSlow===undefined ? slowMode : !!forceSlow;
     const rom = ROMAJI[kana];
-    if(!audioOk || !rom){ ttsFallback(kana); return; }
+    if(!audioOk || !rom || voiceMode==='sys'){ ttsFallback(kana); return; }
     try{ player.pause(); }catch(e){}
-    player.src = (slow ? 'audio/slow/' : 'audio/') + rom + '.mp3';
+    player.src = VOICE_DIR[voiceMode] + rom + '.mp3';
+    try{
+      player.preservesPitch = true;
+      player.mozPreservesPitch = true;
+      player.webkitPreservesPitch = true;
+    }catch(e){}
+    player.playbackRate = slow ? 0.7 : 1;
     const p = player.play();
     if(p && p.catch) p.catch(err=>{
       const n = err && err.name;
@@ -584,8 +605,19 @@
     slowMode = !slowMode;
     localStorage.setItem('kanaSlow', slowMode?'1':'0');
     applySlow();
-    if(mode!=='read' && current) speak(current.k);
+    if(current) speak(current.k);
   });
+
+  const voiceBtns = [...document.querySelectorAll('.vbtn')];
+  function applyVoice(){
+    voiceBtns.forEach(b=>b.classList.toggle('active', b.dataset.voice===voiceMode));
+  }
+  voiceBtns.forEach(b=>b.addEventListener('click', ()=>{
+    voiceMode = b.dataset.voice;
+    localStorage.setItem('kanaVoice', voiceMode);
+    applyVoice();
+    if(current) speak(current.k);
+  }));
 
   // ── 初始化 ────────────────────────────────────────────────
   if(!['read','listen','write'].includes(mode)) mode='read';
@@ -594,7 +626,7 @@
   [...scopeSeg.children].forEach(b=>b.classList.toggle('active', b.dataset.scope===scope));
   if('speechSynthesis' in window){ speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged=()=>{}; }
   buildPool(); buildPad(); updateStats(); newQuestion();
-  applySlow();
+  applySlow(); applyVoice();
 })();
 </script>
 </body>
