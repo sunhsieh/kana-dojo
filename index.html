@@ -153,6 +153,10 @@
   .slowbtn.on{background:var(--indigo); border-color:var(--indigo); color:#fff; box-shadow:0 3px 10px rgba(44,62,107,.20);}
 
   .voicerow{display:flex; align-items:center; gap:6px; padding:0 4px;}
+  .ghostbtn{border:1px solid var(--line); background:transparent; color:#b6ac99; font-family:inherit;
+    font-size:11.5px; font-weight:600; padding:4px 10px; border-radius:999px; cursor:pointer; margin-left:6px;
+    transition:.18s; vertical-align:middle;}
+  .ghostbtn.on{background:var(--green-bg); border-color:var(--green); color:var(--green);}
   .voicerow .vl{font-size:11px; color:#b6ac99; letter-spacing:.14em; margin-right:2px;}
   .vbtn{border:1px solid var(--line); background:transparent; color:var(--ink-soft); font-family:inherit;
     font-size:12px; font-weight:500; padding:5px 11px; border-radius:999px; cursor:pointer; transition:.18s;}
@@ -236,7 +240,7 @@
       <div class="panel" id="writePanel">
         <div class="prompt-wrap">
           <button class="listen-prompt" id="writePrompt" title="撳再聽一次"><span class="ico"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></span></button>
-          <div class="prompt-hint">聽發音 → <b>手寫</b>落格 · 自動認字或自己對</div>
+          <div class="prompt-hint">聽發音 → <b>手寫</b>落格 <button class="ghostbtn" id="recogBtn">認字</button></div>
         </div>
         <div class="paper-wrap"><canvas id="paper"></canvas></div>
         <div class="cands" id="cands"></div>
@@ -321,6 +325,7 @@
   let padButtons = [];
   let revealed=false, strokes=[], curStroke=null, drawing=false, ctx=null;
   let inkT0=0, recogTimer=null, recogSeq=0, cands=[];
+  let autoRecog = localStorage.getItem('kanaRecog') !== '0';
 
   // ── 工具 ──────────────────────────────────────────────────
   const norm = s => (s||'').toLowerCase().replace(/[\s\-'’丶]/g,'').trim();
@@ -562,6 +567,7 @@
   function scheduleRecog(){
     clearTimeout(recogTimer);
     if(answered || mode!=='write') return;
+    if(!autoRecog){ clearCands('自動認字已關 · 撳「睇答案」自己對'); return; }
     recogTimer = setTimeout(recognize, 1250);   // 留足夠停頓，等寫完多筆畫
   }
   // 沿筆畫等距重取樣，令點距一致（隔走手指抖動同過密嘅點）
@@ -630,7 +636,10 @@
       });
       const js = await res.json();
       if(js && js[0]==='SUCCESS' && js[1] && js[1][0]){
-        list = (js[1][0][1] || []).filter(x=>/^[\u3041-\u3096\u30a1-\u30fa]$/.test(x));
+        const raw = (js[1][0][1] || []).map(x=>String(x).trim()).filter(Boolean);
+        const kana = [...new Set(raw.filter(x=>/^[\u3041-\u3096\u30a1-\u30fa\u30fc]$/.test(x)))];
+        // 假名優先；一個都冇就照顯示單字候選，好過靜靜雞話「認唔到」
+        list = kana.length ? kana : [...new Set(raw.filter(x=>x.length===1))].slice(0,4);
       }
     }catch(e){ list = null; }
     if(seq !== recogSeq || answered) return;
@@ -767,6 +776,19 @@
     if(current) speak(current.k);
   });
 
+  const recogBtn = $('recogBtn');
+  function applyRecog(){
+    recogBtn.classList.toggle('on', autoRecog);
+    recogBtn.textContent = autoRecog ? '認字 開' : '認字 關';
+  }
+  recogBtn.addEventListener('click', ()=>{
+    autoRecog = !autoRecog;
+    localStorage.setItem('kanaRecog', autoRecog?'1':'0');
+    applyRecog();
+    if(!autoRecog){ recogSeq++; clearTimeout(recogTimer); clearCands('自動認字已關 · 撳「睇答案」自己對'); }
+    else if(strokes.length) scheduleRecog();
+  });
+
   const voiceBtns = [...document.querySelectorAll('.vbtn')];
   function applyVoice(){
     voiceBtns.forEach(b=>b.classList.toggle('active', b.dataset.voice===voiceMode));
@@ -785,7 +807,7 @@
   [...scopeSeg.children].forEach(b=>b.classList.toggle('active', b.dataset.scope===scope));
   if('speechSynthesis' in window){ speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged=()=>{}; }
   buildPool(); buildPad(); updateStats(); newQuestion();
-  applySlow(); applyVoice();
+  applySlow(); applyVoice(); applyRecog();
 })();
 </script>
 </body>
