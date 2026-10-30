@@ -133,6 +133,12 @@
   .speak{border:1px solid var(--line); background:var(--card); border-radius:9px; width:34px;height:34px;
     display:grid;place-items:center; cursor:pointer; color:var(--indigo); font-size:15px;}
   .speak svg{width:17px; height:17px; display:block;}
+  .speak.slow{font-size:12px; font-weight:700; font-family:inherit; letter-spacing:.02em;}
+
+  .slowbtn{border:1px solid var(--line); background:var(--card); color:var(--ink-soft); font-family:inherit;
+    font-size:12.5px; font-weight:600; padding:0 13px; min-height:44px; border-radius:12px; cursor:pointer;
+    transition:.18s; white-space:nowrap;}
+  .slowbtn.on{background:var(--indigo); border-color:var(--indigo); color:#fff; box-shadow:0 4px 14px rgba(44,62,107,.22);}
 
   .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; background:var(--card);
     border-radius:18px; padding:14px 8px; box-shadow:0 4px 18px rgba(60,48,28,.06); border:1px solid #f2ebdd;}
@@ -175,6 +181,7 @@
         <button data-scope="kata">片假名</button>
         <button data-scope="both">全部</button>
       </div>
+      <button class="slowbtn" id="slowBtn" title="慢速讀音">慢讀</button>
     </div>
 
     <div class="card">
@@ -302,17 +309,49 @@
     lastK=c.k; return c;
   }
 
-  function speak(text){
+  // ── 語音：優先用內建高質錄音，載入唔到先用瀏覽器 TTS ──────
+  const player = new Audio();
+  player.preload = 'auto';
+  const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YQAAAAA=';
+  let audioOk = true, unlocked = false;
+  let slowMode = localStorage.getItem('kanaSlow') === '1';
+
+  function ttsFallback(kana){
     if(!('speechSynthesis' in window)) return;
     try{
       window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang='ja-JP'; u.rate=0.82; u.pitch=1;
-      const v = speechSynthesis.getVoices().find(v=>/ja|japan/i.test(v.lang));
+      const u = new SpeechSynthesisUtterance(kana);
+      u.lang='ja-JP'; u.rate=(slowMode?0.6:0.8); u.pitch=1;
+      const v = speechSynthesis.getVoices().find(x=>/ja|japan/i.test(x.lang));
       if(v) u.voice=v;
       window.speechSynthesis.speak(u);
     }catch(e){}
   }
+  function speak(kana, forceSlow){
+    const slow = forceSlow===undefined ? slowMode : !!forceSlow;
+    const rom = ROMAJI[kana];
+    if(!audioOk || !rom){ ttsFallback(kana); return; }
+    try{
+      player.pause();
+      player.currentTime = 0;
+    }catch(e){}
+    player.src = (slow ? 'audio/slow/' : 'audio/') + rom + '.mp3';
+    const p = player.play();
+    if(p && p.catch) p.catch(()=>{ audioOk=false; ttsFallback(kana); });
+  }
+  // iOS/Safari：第一次用戶手勢要「解鎖」音效
+  function unlockAudio(){
+    if(unlocked) return; unlocked = true;
+    try{
+      player.muted = true;
+      player.src = SILENT;
+      const p = player.play();
+      const done = ()=>{ try{ player.pause(); player.muted=false; }catch(e){} };
+      if(p && p.then) p.then(done).catch(()=>{ player.muted=false; }); else done();
+    }catch(e){ player.muted = false; }
+  }
+  document.addEventListener('pointerdown', unlockAudio, {once:true, passive:true});
+  document.addEventListener('keydown', unlockAudio, {once:true});
   function playPrompt(){
     if(!current || mode==='read') return;
     const btn = mode==='write' ? writePrompt : listenPrompt;
@@ -488,9 +527,11 @@
       '<span class="dot"></span>' +
       (head?'<span>'+head+'</span>':'') +
       (detailHtml?'<span>'+detailHtml+'</span>':'') +
-      '<button class="speak" title="聽讀音">'+SPEAK_SVG+'</button>';
-    const sb=el.querySelector('.speak');
-    if(sb) sb.onclick=()=>speak(speakKana||current.k);
+      '<button class="speak" data-sp="1" title="聽讀音">'+SPEAK_SVG+'</button>' +
+      '<button class="speak slow" data-sp="2" title="慢速讀音">慢</button>';
+    el.querySelectorAll('.speak').forEach(b=>{
+      b.onclick = ()=> speak(speakKana||current.k, b.dataset.sp==='2');
+    });
   }
   function updateStats(){
     $('statStreak').textContent=stats.streak;
@@ -531,6 +572,17 @@
   $('resetBtn').addEventListener('click', ()=>{
     stats={correct:0,wrong:0,streak:0}; updateStats(); newQuestion();
   });
+  const slowBtn = $('slowBtn');
+  function applySlow(){
+    slowBtn.classList.toggle('on', slowMode);
+    slowBtn.textContent = slowMode ? '慢讀 ✓' : '慢讀';
+  }
+  slowBtn.addEventListener('click', ()=>{
+    slowMode = !slowMode;
+    localStorage.setItem('kanaSlow', slowMode?'1':'0');
+    applySlow();
+    if(mode!=='read' && current) speak(current.k);
+  });
 
   // ── 初始化 ────────────────────────────────────────────────
   if(!['read','listen','write'].includes(mode)) mode='read';
@@ -539,6 +591,7 @@
   [...scopeSeg.children].forEach(b=>b.classList.toggle('active', b.dataset.scope===scope));
   if('speechSynthesis' in window){ speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged=()=>{}; }
   buildPool(); buildPad(); updateStats(); newQuestion();
+  applySlow();
 })();
 </script>
 </body>
