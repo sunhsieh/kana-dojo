@@ -121,6 +121,18 @@
   .score.ok{background:var(--green-bg); color:var(--green); border:1.5px solid var(--green);}
   .score.no{background:var(--red-bg); color:var(--red); border:1.5px solid var(--red);}
 
+  .cands{width:100%; max-width:320px; display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;
+    align-items:center; justify-content:center; min-height:0;}
+  .cands .lbl{font-size:11px; color:#b6ac99; letter-spacing:.12em; margin-right:2px;}
+  .cands .hint{font-size:12px; color:var(--ink-soft); text-align:center;}
+  .cand{border:1.5px solid var(--line); background:#fffefb; border-radius:11px; min-width:46px; height:46px;
+    font-family:"Noto Serif JP",serif; font-size:21px; font-weight:700; color:var(--ink); cursor:pointer;
+    padding:0 9px; transition:.13s;}
+  .cand:hover{border-color:var(--indigo);}
+  .cand:active{transform:scale(.94);}
+  .cand.right{border-color:var(--green); color:var(--green); background:var(--green-bg);}
+  .cand.wrongtap{border-color:var(--red); color:var(--red); background:var(--red-bg);}
+
   .feedback{width:100%; margin-top:14px; min-height:40px; display:flex; align-items:center; justify-content:center;
     gap:9px; font-size:15px; font-weight:600; text-align:center; flex-wrap:wrap;
     opacity:0; transition:opacity .2s;}
@@ -224,9 +236,10 @@
       <div class="panel" id="writePanel">
         <div class="prompt-wrap">
           <button class="listen-prompt" id="writePrompt" title="撳再聽一次"><span class="ico"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></span></button>
-          <div class="prompt-hint">聽發音 → <b>手寫</b>落格 → 自己對答案</div>
+          <div class="prompt-hint">聽發音 → <b>手寫</b>落格 · 自動認字或自己對</div>
         </div>
         <div class="paper-wrap"><canvas id="paper"></canvas></div>
+        <div class="cands" id="cands"></div>
         <div class="writebar">
           <button class="mini" id="undoBtn">撤銷</button>
           <button class="mini" id="clearBtn">清除</button>
@@ -297,6 +310,7 @@
   const padEl=$('pad'), listenPrompt=$('listenPrompt'), fbListen=$('fbListen');
   const writePanel=$('writePanel'), writePrompt=$('writePrompt'), fbWrite=$('fbWrite');
   const paper=$('paper'), revealEl=$('reveal'), scorebar=$('scorebar'), revealBtn=$('revealBtn');
+  const candsEl=$('cands');
   const writebarEl=document.querySelector('.writebar');
 
   // ── 狀態 ──────────────────────────────────────────────────
@@ -306,9 +320,11 @@
   let stats = {correct:0, wrong:0, streak:0};
   let padButtons = [];
   let revealed=false, strokes=[], curStroke=null, drawing=false, ctx=null;
+  let inkT0=0, recogTimer=null, recogSeq=0, cands=[];
 
   // ── 工具 ──────────────────────────────────────────────────
   const norm = s => (s||'').toLowerCase().replace(/[\s\-'’丶]/g,'').trim();
+  const toHira = s => (s||'').replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
 
   function buildPool(){
     if(scope==='hira') pool = packHira.slice();
@@ -505,20 +521,27 @@
     });
   }
   function resetInk(){
-    strokes=[]; drawing=false; curStroke=null; revealed=false;
+    strokes=[]; drawing=false; curStroke=null; revealed=false; inkT0=0;
+    clearTimeout(recogTimer); recogSeq++; cands=[];
+    candsEl.innerHTML='';
     revealEl.className='reveal'; revealEl.innerHTML='';
     scorebar.classList.remove('show');
     writebarEl.style.display='';
     fitCanvas();
   }
-  function doReveal(){
-    if(mode!=='write' || revealed || answered) return;
-    revealed=true;
+  function showAnswer(){
     const alts=current.r.slice(1);
     revealEl.innerHTML='正確答案：<b>'+current.k+'</b><span class="alt">'+current.r[0]+
       (alts.length?' / '+alts.join(' / '):'')+'</span>';
     revealEl.classList.add('show');
+  }
+  function doReveal(){
+    if(mode!=='write' || revealed || answered) return;
+    revealed=true;
+    recogSeq++; clearTimeout(recogTimer);
     writebarEl.style.display='none';
+    candsEl.innerHTML='';
+    showAnswer();
     scorebar.classList.add('show');
     speak(current.k);
   }
@@ -530,18 +553,103 @@
     updateStats();
     setTimeout(()=>{ if(answered) newQuestion(); }, 950);
   }
-  const inkPos = e => { const r=paper.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; };
+  // ── 手寫認字（Google Handwriting API）────────────────────
+  function clearCands(msg){
+    candsEl.innerHTML = msg ? '<span class="hint">'+msg+'</span>' : '';
+  }
+  function scheduleRecog(){
+    clearTimeout(recogTimer);
+    if(answered || mode!=='write') return;
+    recogTimer = setTimeout(recognize, 650);
+  }
+  function inkPayload(){
+    let pts = strokes;
+    const total = pts.reduce((a,s)=>a+s.length, 0);
+    if(total > 320){
+      const k = Math.ceil(total/320);
+      pts = pts.map(s=>s.filter((_,i)=> i%k===0 || i===s.length-1));
+    }
+    return pts.map(s=>s.map(p=>[Math.round(p[0]), Math.round(p[1]), p[2]||0]));
+  }
+  async function recognize(){
+    if(mode!=='write' || answered || !strokes.length) return;
+    const seq = ++recogSeq;
+    const w = Math.round(paper.getBoundingClientRect().width) || 300;
+    clearCands('認字中…');
+    let list = null;
+    try{
+      const res = await fetch('https://inputtools.google.com/request?itc=ja-t-i0-handwrit&app=demopage', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ options:'enable_pre_space', requests:[{
+          writing_guide:{ writing_area_width:w, writing_area_height:w },
+          ink: inkPayload(), language:'ja'
+        }]})
+      });
+      const js = await res.json();
+      if(js && js[0]==='SUCCESS' && js[1] && js[1][0]){
+        list = (js[1][0][1] || []).filter(x=>/^[\u3041-\u3096\u30a1-\u30fa]$/.test(x));
+      }
+    }catch(e){ list = null; }
+    if(seq !== recogSeq || answered) return;
+    cands = list || [];
+    if(!cands.length){
+      clearCands(list===null ? '認字暫時唔得（要連網）· 可撳「睇答案」自己對'
+                             : '認唔到，再寫一次？');
+      return;
+    }
+    renderCands();
+  }
+  function renderCands(){
+    candsEl.innerHTML = '';
+    const lbl = document.createElement('span');
+    lbl.className='lbl'; lbl.textContent='認到';
+    candsEl.appendChild(lbl);
+    cands.slice(0,6).forEach(ch=>{
+      const b = document.createElement('button');
+      b.className='cand'; b.textContent=ch;
+      b.addEventListener('click', ()=>pickCand(ch, b));
+      candsEl.appendChild(b);
+    });
+  }
+  function pickCand(ch, btn){
+    if(mode!=='write' || answered) return;
+    answered = true;
+    clearTimeout(recogTimer); recogSeq++;
+    const ok = toHira(ch) === toHira(current.k);
+    btn.classList.add(ok ? 'right' : 'wrongtap');
+    if(ok){
+      stats.correct++; stats.streak++;
+      showFeedback(fbWrite, true, '答啱！', '', current.k);
+    }else{
+      stats.wrong++; stats.streak=0;
+      showFeedback(fbWrite, false, '', '你寫嘅係「'+ch+'」，正確係 <span class="answer-txt">'+current.k+'</span>', current.k);
+    }
+    updateStats();
+    writebarEl.style.display='none';
+    showAnswer();
+    setTimeout(()=>{ if(answered) newQuestion(); }, 1150);
+  }
+
+  const inkPos = e => {
+    const r=paper.getBoundingClientRect();
+    return [e.clientX-r.left, e.clientY-r.top, Math.round(performance.now()-inkT0)];
+  };
   paper.addEventListener('pointerdown', e=>{
     if(mode!=='write' || answered) return;
     e.preventDefault();
     try{ paper.setPointerCapture(e.pointerId); }catch(_){}
+    if(!strokes.length){ inkT0 = performance.now(); candsEl.innerHTML=''; cands=[]; }
     drawing=true; curStroke=[inkPos(e)]; strokes.push(curStroke); redraw();
   });
   paper.addEventListener('pointermove', e=>{
     if(!drawing) return;
     curStroke.push(inkPos(e)); redraw();
   });
-  ['pointerup','pointercancel'].forEach(t=>paper.addEventListener(t, ()=>{ drawing=false; curStroke=null; }));
+  ['pointerup','pointercancel'].forEach(t=>paper.addEventListener(t, ()=>{
+    if(!drawing) return;
+    drawing=false; curStroke=null; scheduleRecog();
+  }));
   window.addEventListener('resize', ()=>{ if(mode==='write') fitCanvas(); });
 
   // ── 共用 feedback ─────────────────────────────────────────
@@ -585,8 +693,14 @@
   listenPrompt.addEventListener('click', playPrompt);
   writePrompt.addEventListener('click', playPrompt);
   revealBtn.addEventListener('click', doReveal);
-  $('undoBtn').addEventListener('click', ()=>{ if(!answered && strokes.length){ strokes.pop(); redraw(); } });
-  $('clearBtn').addEventListener('click', ()=>{ if(!answered){ strokes=[]; redraw(); } });
+  $('undoBtn').addEventListener('click', ()=>{
+    if(answered) return;
+    if(strokes.length){ strokes.pop(); redraw(); scheduleRecog(); }
+  });
+  $('clearBtn').addEventListener('click', ()=>{
+    if(answered) return;
+    strokes=[]; inkT0=0; cands=[]; clearCands(''); redraw();
+  });
   $('okBtn').addEventListener('click', ()=>scoreWrite(true));
   $('noBtn').addEventListener('click', ()=>scoreWrite(false));
   document.addEventListener('keydown', e=>{
