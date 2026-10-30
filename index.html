@@ -665,21 +665,27 @@
   }
   function pickCand(ch, btn){
     if(mode!=='write' || answered) return;
-    answered = true;
     clearTimeout(recogTimer); recogSeq++;
     const ok = toHira(ch) === toHira(current.k);
-    btn.classList.add(ok ? 'right' : 'wrongtap');
     if(ok){
+      answered = true;
+      btn.classList.add('right');
       stats.correct++; stats.streak++;
       showFeedback(fbWrite, true, '答啱！', '', current.k);
-    }else{
-      stats.wrong++; stats.streak=0;
-      showFeedback(fbWrite, false, '', '你寫嘅係「'+ch+'」，正確係 <span class="answer-txt">'+current.k+'</span>', current.k);
+      updateStats();
+      writebarEl.style.display='none';
+      showAnswer();
+      setTimeout(()=>{ if(answered) newQuestion(); }, 1150);
+      return;
     }
-    updateStats();
+    // 認字唔準唔應該罰你 → 揭答案，交返你判
+    btn.classList.add('wrongtap');
+    revealed = true;
     writebarEl.style.display='none';
     showAnswer();
-    setTimeout(()=>{ if(answered) newQuestion(); }, 1150);
+    candsEl.querySelectorAll('.cand').forEach(b=>{ b.disabled=true; b.style.opacity='.55'; });
+    scorebar.classList.add('show');
+    showFeedback(fbWrite, false, '', '認到「'+ch+'」· 自己判：', current.k);
   }
 
   const inkPos = e => {
