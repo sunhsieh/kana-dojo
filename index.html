@@ -560,7 +560,7 @@
   }
   // ── 手寫認字：本地筆順比對（KanjiVG 模板 + DTW）──────────
   let TPL = null, TPL_N = 16;
-  const tplReady = fetch('kana-templates.json')
+  const tplReady = fetch('kana-templates.json?v=2')
     .then(r=>r.json())
     .then(j=>{ TPL = j.tpl; TPL_N = j.n || 16; })
     .catch(()=>{ TPL = null; });
@@ -658,6 +658,7 @@
     if(best > 0.62) return [];                       // 差太遠 → 當認唔到
     return scored.filter(x=>x[0] <= best*1.85 + 0.03).slice(0,6).map(x=>x[1]);
   }
+  window.__dbg = { scoreKana, normalizeInk, localRank, get tpl(){return TPL;}, get ink(){return strokes;} };
   async function recognize(){
     if(mode!=='write' || answered || !strokes.length) return;
     const seq = ++recogSeq;
