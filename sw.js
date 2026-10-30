@@ -1,5 +1,5 @@
 /* Kana Dojo service worker — 離線可用 */
-const VERSION = 'kana-v1';
+const VERSION = 'kana-v2';
 const SHELL = [
   './',
   './index.html',
