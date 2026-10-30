@@ -554,27 +554,69 @@
     setTimeout(()=>{ if(answered) newQuestion(); }, 950);
   }
   // ── 手寫認字（Google Handwriting API）────────────────────
+  const GUIDE = 300;          // 送去辨識嘅標準方格
+  const OUT_SCALE = 0.82;     // 字佔格嘅比例
   function clearCands(msg){
     candsEl.innerHTML = msg ? '<span class="hint">'+msg+'</span>' : '';
   }
   function scheduleRecog(){
     clearTimeout(recogTimer);
     if(answered || mode!=='write') return;
-    recogTimer = setTimeout(recognize, 650);
+    recogTimer = setTimeout(recognize, 1250);   // 留足夠停頓，等寫完多筆畫
+  }
+  // 沿筆畫等距重取樣，令點距一致（隔走手指抖動同過密嘅點）
+  function resample(pts, step){
+    if(pts.length < 2) return pts.map(p=>p.slice());
+    const out = [pts[0].slice()];
+    for(let i=1;i<pts.length;i++){
+      const b = pts[i];
+      let ax = out[out.length-1][0], ay = out[out.length-1][1], at = out[out.length-1][2];
+      let dx = b[0]-ax, dy = b[1]-ay, d = Math.hypot(dx,dy);
+      while(d >= step){
+        const k = step/d;
+        ax += dx*k; ay += dy*k; at += (b[2]-at)*k;
+        out.push([ax, ay, at]);
+        dx = b[0]-ax; dy = b[1]-ay; d = Math.hypot(dx,dy);
+      }
+    }
+    const last = pts[pts.length-1];
+    const tail = out[out.length-1];
+    if(Math.hypot(tail[0]-last[0], tail[1]-last[1]) > 0.5) out.push(last.slice());
+    return out;
+  }
+  // 三點加權平滑，減低手震
+  function smooth(pts){
+    if(pts.length < 3) return pts;
+    const q = pts.map(p=>p.slice());
+    for(let i=1;i<pts.length-1;i++){
+      q[i][0] = (pts[i-1][0] + 2*pts[i][0] + pts[i+1][0]) / 4;
+      q[i][1] = (pts[i-1][1] + 2*pts[i][1] + pts[i+1][1]) / 4;
+    }
+    return q;
   }
   function inkPayload(){
-    let pts = strokes;
-    const total = pts.reduce((a,s)=>a+s.length, 0);
-    if(total > 320){
-      const k = Math.ceil(total/320);
-      pts = pts.map(s=>s.filter((_,i)=> i%k===0 || i===s.length-1));
-    }
-    return pts.map(s=>s.map(p=>[Math.round(p[0]), Math.round(p[1]), p[2]||0]));
+    const flat = strokes.flat();
+    if(!flat.length) return [];
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    flat.forEach(p=>{
+      if(p[0]<minX) minX=p[0]; if(p[0]>maxX) maxX=p[0];
+      if(p[1]<minY) minY=p[1]; if(p[1]>maxY) maxY=p[1];
+    });
+    const bw = maxX-minX, bh = maxY-minY;
+    const side = Math.max(bw, bh, 1);
+    const scale = (GUIDE * OUT_SCALE) / side;
+    const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
+    const ox = GUIDE/2 - cx*scale, oy = GUIDE/2 - cy*scale;
+    return strokes.map(s=>{
+      const moved = s.map(([x,y,t])=>[x*scale+ox, y*scale+oy, t||0]);
+      const rs = resample(moved, 2.2);
+      const sm = smooth(rs);
+      return sm.map(p=>[Math.round(p[0]), Math.round(p[1]), Math.round(p[2])]);
+    }).filter(s=>s.length);
   }
   async function recognize(){
     if(mode!=='write' || answered || !strokes.length) return;
     const seq = ++recogSeq;
-    const w = Math.round(paper.getBoundingClientRect().width) || 300;
     clearCands('認字中…');
     let list = null;
     try{
@@ -582,7 +624,7 @@
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ options:'enable_pre_space', requests:[{
-          writing_guide:{ writing_area_width:w, writing_area_height:w },
+          writing_guide:{ writing_area_width:GUIDE, writing_area_height:GUIDE },
           ink: inkPayload(), language:'ja'
         }]})
       });
@@ -605,7 +647,7 @@
     const lbl = document.createElement('span');
     lbl.className='lbl'; lbl.textContent='認到';
     candsEl.appendChild(lbl);
-    cands.slice(0,6).forEach(ch=>{
+    cands.slice(0,8).forEach(ch=>{
       const b = document.createElement('button');
       b.className='cand'; b.textContent=ch;
       b.addEventListener('click', ()=>pickCand(ch, b));
@@ -639,7 +681,10 @@
     if(mode!=='write' || answered) return;
     e.preventDefault();
     try{ paper.setPointerCapture(e.pointerId); }catch(_){}
-    if(!strokes.length){ inkT0 = performance.now(); candsEl.innerHTML=''; cands=[]; }
+    if(!strokes.length) inkT0 = performance.now();
+    // 一落筆就收起舊候選，避免半個字嘅錯誤結果干擾
+    clearTimeout(recogTimer); recogSeq++; cands=[];
+    if(candsEl.childElementCount) clearCands('');
     drawing=true; curStroke=[inkPos(e)]; strokes.push(curStroke); redraw();
   });
   paper.addEventListener('pointermove', e=>{
